@@ -91,7 +91,7 @@ except FileNotFoundError:
 st.sidebar.header("Chatbot Settings")
 temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.7)
 model = st.sidebar.selectbox("Model", ["gpt-4", "claude-3"])
-
+api_key = st.sidebar.text_input("API Key", type="password")
 # Main area keeps the chat
 st.header("4. Chatbot")
 
@@ -128,4 +128,5 @@ if prompt := st.chat_input("Say something"):
         # write_stream consumes generator, returns full text
         full_response = st.write_stream(stream())
     
+
     st.session_state.messages.append({"role": "assistant", "content": full_response})
