@@ -18,7 +18,7 @@ if st.button("Retrieve Wikipedia pages"):
 
     with st.spinner("Searching Wikipedia..."):
         retriever = WikipediaRetriever(top_k_results=5, lang="en")
-        docs = retriever.get_relevant_documents(industry)
+        docs = retriever.invoke(industry)   
 
     if not docs:
         st.warning("No relevant Wikipedia pages found.")
@@ -28,3 +28,4 @@ if st.button("Retrieve Wikipedia pages"):
     for doc in docs[:5]:
         url = doc.metadata.get("source", "URL not available")
         st.write(url)
+
