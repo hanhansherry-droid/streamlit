@@ -122,8 +122,6 @@ if industry and industry.strip():
         st.stop()
 
     context = build_context(docs)
-
-    # ✅ try/except 放在这里：包住真正的 LLM 调用
     with st.spinner("Generating industry report (<500 words)..."):
         try:
             report = generate_report_kimi(industry, context)
@@ -142,3 +140,4 @@ if industry and industry.strip():
 else:
     # Q1: No industry provided
     st.info("Please enter an industry to begin.")
+
