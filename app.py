@@ -124,7 +124,14 @@ if industry and industry.strip():
     context = build_context(docs)
 
     with st.spinner("Generating industry report (<500 words)..."):
+    try:
         report = generate_report_kimi(industry, context)
+    except Exception as e:
+        st.error("LLM call failed. Showing debug info:")
+        st.write(type(e).__name__)
+        st.write(str(e))
+        st.stop()
+
 
     report = compress_to_500_words_if_needed(industry, report)
 
@@ -135,3 +142,4 @@ if industry and industry.strip():
 else:
     # Q1: No industry provided
     st.info("Please enter an industry to begin.")
+
