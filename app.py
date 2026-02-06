@@ -123,7 +123,7 @@ if industry and industry.strip():
 
     context = build_context(docs)
 
-    with st.spinner("Generating industry report (<500 words)..."):
+with st.spinner("Generating industry report (<500 words)..."):
     try:
         report = generate_report_kimi(industry, context)
     except Exception as e:
@@ -132,14 +132,14 @@ if industry and industry.strip():
         st.write(str(e))
         st.stop()
 
+report = compress_to_500_words_if_needed(industry, report)
 
-    report = compress_to_500_words_if_needed(industry, report)
-
-    st.subheader("Step 3 — Industry report (<500 words)")
-    st.write(report)
-    st.caption(f"Word count: {word_count(report)} (must be < 500)")
+st.subheader("Step 3 — Industry report (<500 words)")
+st.write(report)
+st.caption(f"Word count: {word_count(report)} (must be < 500)")
 
 else:
     # Q1: No industry provided
     st.info("Please enter an industry to begin.")
+
 
