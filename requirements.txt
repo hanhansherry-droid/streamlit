@@ -2,6 +2,7 @@ pandas
 numpy
 scikit-learn
 streamlit>=1.30.0
-langchain_community
-wikipedia
 openai
+langchain
+langchain-community
+wikipedia
