@@ -1,4 +1,4 @@
-iimport os
+import os
 import re
 import streamlit as st
 from langchain_community.retrievers import WikipediaRetriever
@@ -142,3 +142,4 @@ if industry and industry.strip():
 else:
     # Q1: No industry provided
     st.info("Please enter an industry to begin.")
+
