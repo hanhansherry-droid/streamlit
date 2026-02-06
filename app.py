@@ -1,4 +1,4 @@
-iimport os
+import os
 import re
 import streamlit as st
 from langchain_community.retrievers import WikipediaRetriever
@@ -123,7 +123,7 @@ if industry and industry.strip():
 
     context = build_context(docs)
 
-    
+    # ✅ try/except 放在这里：包住真正的 LLM 调用
     with st.spinner("Generating industry report (<500 words)..."):
         try:
             report = generate_report_kimi(industry, context)
