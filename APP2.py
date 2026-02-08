@@ -5,7 +5,7 @@ import streamlit as st
 from langchain_community.retrievers import WikipediaRetriever
 from openai import OpenAI
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List
 
 
 # =========================
@@ -16,11 +16,8 @@ class WikiPageInfo:
     title: str
     url: str
     content: str
-    score: float
-    year_max: int
-    citations_count: int
+    max_year: int
     word_count: int
-    notes: List[str]
 
 
 # =========================
@@ -30,153 +27,100 @@ def wc(text: str) -> int:
     return len(re.findall(r"\b\w+\b", text or ""))
 
 
-def count_citations(text: str) -> int:
-    # Wikipedia extracts often include [1], [2] references
-    return len(re.findall(r"\[\d+\]", text or ""))
-
-
 def extract_max_year(text: str) -> int:
     years = re.findall(r"\b(19\d{2}|20\d{2})\b", text or "")
     years_int = [int(y) for y in years if 1900 <= int(y) <= 2100]
     return max(years_int) if years_int else 0
 
 
-def is_bad_title(title: str) -> bool:
+def is_low_value_page(title: str) -> bool:
+    """Filter pages that are usually not good industry sources."""
     t = (title or "").lower()
-    bad_patterns = [
-        "disambiguation",
-        "list of",
-        "outline of",
-        "index of",
-    ]
+    bad_patterns = ["disambiguation", "list of", "outline of", "index of"]
     return any(p in t for p in bad_patterns)
 
 
-def relevance_score(industry: str, title: str, content: str) -> float:
-    ind = (industry or "").lower().strip()
-    t = (title or "").lower()
-    c = (content or "").lower()
+def pick_top5_docs(industry: str, docs, min_words: int = 300) -> List[WikiPageInfo]:
+    """
+    Selection criteria:
+    1) Most relevant: keep retriever order as primary relevance signal.
+    2) Prefer recent: use max_year as tie-break among candidates.
+    3) Filter out disambiguation/list/outline.
+    4) Filter out very short pages (word_count < min_words).
+    5) De-duplicate by title.
+    """
+    candidates: List[WikiPageInfo] = []
+    seen_titles = set()
 
-    if not ind:
-        return 0.0
-
-    keywords = [k for k in re.split(r"[\s,;/\-]+", ind) if len(k) >= 3]
-    if not keywords:
-        return 0.0
-
-    in_title = sum(1 for k in keywords if k in t)
-    in_content = sum(1 for k in keywords if k in c[:3000])
-
-    title_part = min(in_title / len(keywords), 1.0)
-    content_part = min(in_content / len(keywords), 1.0)
-    return 0.6 * title_part + 0.4 * content_part
-
-
-def page_quality_score(industry: str, title: str, content: str) -> Tuple[float, List[str], int, int, int]:
-    notes: List[str] = []
-
-    words = wc(content)
-    cits = count_citations(content)
-    max_year = extract_max_year(content)
-    rel = relevance_score(industry, title, content)
-
-    if is_bad_title(title):
-        notes.append("List/Disambiguation-like title")
-
-    # Depth
-    depth = min(words / 1200, 1.0)
-    if words < 300:
-        notes.append("Very short content (likely not useful)")
-    elif words < 1200:
-        notes.append("Short content (may lack depth)")
-
-    # Citations
-    cit_score = min(cits / 15, 1.0)
-    if cits < 3:
-        notes.append("Few citations/refs in extracted text")
-
-    # Recency (soft preference)
-    if max_year >= 2023:
-        recency = 1.0
-    elif max_year >= 2020:
-        recency = 0.7
-    elif max_year >= 2015:
-        recency = 0.4
-    else:
-        recency = 0.2
-        notes.append("No clear recent year mentions")
-
-    if "citation needed" in (content or "").lower():
-        notes.append("Contains 'citation needed'")
-
-    if rel < 0.25:
-        notes.append("Weak industry keyword match (possible off-topic)")
-
-    # Weighted score
-    score = (
-        0.30 * rel +
-        0.25 * depth +
-        0.25 * cit_score +
-        0.20 * recency
-    )
-
-    return score, notes, max_year, cits, words
-
-
-def evaluate_and_select_top5(industry: str, docs) -> List[WikiPageInfo]:
-    evaluated: List[WikiPageInfo] = []
-
+    # Step A: basic filtering while preserving original order
     for d in docs:
         meta = d.metadata or {}
-        title = (meta.get("title", "") or "").strip() or "Untitled"
+        title = (meta.get("title") or "").strip() or "Untitled"
         url = meta.get("source", "URL not available")
         content = (d.page_content or "").strip()
 
-        score, notes, year_max, cits, words = page_quality_score(industry, title, content)
+        if title.lower() in seen_titles:
+            continue
+        seen_titles.add(title.lower())
 
-        # Hard filters (but we fall back if too few)
-        hard_bad = is_bad_title(title)
-        too_short = words < 300
-        too_irrelevant = relevance_score(industry, title, content) < 0.15
+        if is_low_value_page(title):
+            continue
 
-        if hard_bad:
-            notes.append("Filtered signal: low reference value title")
-        if too_short:
-            notes.append("Filtered signal: too short")
-        if too_irrelevant:
-            notes.append("Filtered signal: unclear relevance")
+        words = wc(content)
+        if words < min_words:
+            continue
 
-        evaluated.append(
+        candidates.append(
             WikiPageInfo(
                 title=title,
                 url=url,
                 content=content,
-                score=score,
-                year_max=year_max,
-                citations_count=cits,
+                max_year=extract_max_year(content),
                 word_count=words,
-                notes=notes,
             )
         )
 
-    # Prefer pages that are NOT hard-bad, but if we don't have enough, use best scores anyway
-    filtered = []
-    for p in evaluated:
-        if "Filtered signal:" not in " ".join(p.notes):
-            filtered.append(p)
+    # If filtering is too strict, fall back to the first usable pages (still no scoring)
+    if len(candidates) < 5:
+        fallback = []
+        seen_titles = set()
+        for d in docs:
+            meta = d.metadata or {}
+            title = (meta.get("title") or "").strip() or "Untitled"
+            url = meta.get("source", "URL not available")
+            content = (d.page_content or "").strip()
 
-    if len(filtered) < 5:
-        filtered = evaluated
+            if title.lower() in seen_titles:
+                continue
+            seen_titles.add(title.lower())
 
-    filtered.sort(key=lambda x: x.score, reverse=True)
-    return filtered[:5]
+            fallback.append(
+                WikiPageInfo(
+                    title=title,
+                    url=url,
+                    content=content,
+                    max_year=extract_max_year(content),
+                    word_count=wc(content),
+                )
+            )
+            if len(fallback) == 5:
+                break
+        return fallback
+
+    # Step B (light preference for recency): sort candidates by max_year DESC,
+    # but keep relevance by only applying this within the already "most relevant set".
+    # To avoid breaking relevance too much, we take the first 8 in relevance order,
+    # then sort those by year and take top 5.
+    top_by_relevance = candidates[:8]  # relevance proxy: original order
+    top_by_relevance.sort(key=lambda x: x.max_year, reverse=True)
+
+    return top_by_relevance[:5]
 
 
 def build_context(pages: List[WikiPageInfo], max_chars: int = 12000) -> str:
     parts = []
     for i, p in enumerate(pages, start=1):
-        if p.content:
-            parts.append(f"[Source {i}: {p.title}]\n{p.content}\n")
+        parts.append(f"[Source {i}: {p.title}]\n{p.content}\n")
     ctx = "\n".join(parts)
     return ctx[:max_chars]
 
@@ -195,37 +139,34 @@ def generate_report(industry: str, context: str, pages: List[WikiPageInfo]) -> s
     prompt = f"""
 You are a market research assistant writing for a business analyst at a large corporation.
 
-STRICT RULES (must follow):
-- Use ONLY the information in the provided Wikipedia sources.
+RULES:
+- Use ONLY the information from the provided Wikipedia sources.
 - Do NOT use external knowledge.
-- If a section cannot be supported, write: "Information not available in the provided sources."
 - Cite key statements using [Source 1], [Source 2], etc.
 - Keep the full report UNDER 500 words.
+- Write in a neutral, analytical, consultant-style tone.
 
 Industry: {industry}
 
 The five sources are:
 {sources_list}
 
-Write a concise consultant-style report with these headings:
+Write a concise report with these headings:
 
 ## Industry overview
-(Definition, scope, and what the industry includes/excludes.)
+(Definition and scope.)
 
 ## Industry development trends
-(How the industry has evolved and what directional changes are described in the sources. If "latest news" is not in sources, say so.)
+(How the industry has evolved and major directional changes described in the sources.)
 
 ## Competitive landscape
-(Key players/types of players, concentration vs fragmentation, and competitive dynamics described in sources.)
+(Key players/types of players and competition dynamics described.)
 
-## Customers and demand drivers
-(Customer types/segments and what drives demand, only if supported.)
+## Customers and demand characteristics
+(Customer groups and demand drivers if supported.)
 
 ## Risks and challenges
-(Regulatory, reputational, sustainability, operational risks, controversies, etc.)
-
-## Information gaps (next research priorities)
-(What important data or facts are missing from Wikipedia sources and what a real analyst should research next.)
+(Regulatory, operational, reputational, sustainability challenges mentioned.)
 
 Sources:
 {context}
@@ -269,47 +210,37 @@ REPORT:
 
 
 # =========================
-# Streamlit UI (simple, stable reruns)
+# Streamlit UI (simple + stable reruns)
 # =========================
 st.set_page_config(page_title="Market Research Assistant", layout="centered")
 st.title("Market Research Assistant")
-st.write(
-    "Enter an industry. The app retrieves screened Wikipedia pages and generates a <500-word consultant-style summary "
-    "based only on those sources."
-)
+st.write("Enter an industry. The app retrieves the top 5 relevant Wikipedia pages and generates a <500-word report based only on those sources.")
 
-industry = st.text_input(
-    "Enter an industry",
-    placeholder="e.g., fast fashion, airline industry, semiconductor industry",
-)
+industry = st.text_input("Enter an industry", placeholder="e.g., fast fashion, airline industry, semiconductor industry")
 
-# ---- Debounce (prevents rerun on every keystroke from breaking Streamlit front-end) ----
+# Debounce to avoid rerun on every keystroke
 if "last_input" not in st.session_state:
     st.session_state.last_input = ""
 if "last_time" not in st.session_state:
     st.session_state.last_time = 0.0
 
 now = time.time()
-
 if industry != st.session_state.last_input:
     st.session_state.last_input = industry
     st.session_state.last_time = now
-    st.info("Typing... (analysis will run after you pause)")
     st.stop()
 
-# Only run if unchanged for 0.6s
 if now - st.session_state.last_time < 0.6:
-    st.info("Typing... (analysis will run after you pause)")
     st.stop()
 
-# Q1: input validation
+# Q1
 if not industry or not industry.strip():
     st.info("Please enter an industry to begin.")
     st.stop()
 
 industry = industry.strip()
 
-# Q2: retrieve & screen pages
+# Q2
 with st.spinner("Searching Wikipedia..."):
     retriever = WikipediaRetriever(top_k_results=12, lang="en")
     raw_docs = retriever.invoke(industry)
@@ -318,20 +249,15 @@ if not raw_docs:
     st.warning("No relevant Wikipedia pages found. Try a different industry keyword.")
     st.stop()
 
-pages = evaluate_and_select_top5(industry, raw_docs)
+pages = pick_top5_docs(industry, raw_docs, min_words=300)
 
-st.subheader("Step 2 — Screened top 5 Wikipedia pages (URLs + quality notes)")
+st.subheader("Step 2 — Top 5 relevant Wikipedia pages (Title | Year | Word count | URL)")
 for i, p in enumerate(pages, start=1):
-    st.write(f"{i}. {p.url}")
-    st.write(
-        f"Title: {p.title} | Score: {p.score:.2f} | Max year: {p.year_max or 'N/A'} | "
-        f"Words: {p.word_count} | Citations: {p.citations_count}",
-        key=f"meta_{i}",
-    )
-    if p.notes:
-        st.caption("Notes: " + " | ".join(p.notes[:3]))
+    year_display = p.max_year if p.max_year else "N/A"
+    st.write(f"{i}. **{p.title}** | Year: **{year_display}** | Words: **{p.word_count}**")
+    st.write(p.url)
 
-# Q3: report generation
+# Q3
 if not os.getenv("HF_TOKEN"):
     st.info("Q3 (report generation) is disabled because HF_TOKEN is not set in Streamlit Cloud Secrets.")
     st.stop()
