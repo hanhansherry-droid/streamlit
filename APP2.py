@@ -5,9 +5,6 @@ from langchain_community.retrievers import WikipediaRetriever
 from openai import OpenAI
 
 
-# =========================
-# Helpers
-# =========================
 def word_count(text: str) -> int:
     return len(re.findall(r"\b\w+\b", text or ""))
 
@@ -23,82 +20,77 @@ def is_low_value_title(title: str) -> bool:
     return any(x in t for x in ["disambiguation", "list of", "outline of", "index of"])
 
 
-def screen_docs(docs, min_words: int = 300, min_year: int = 2022):
+def select_5_docs(docs, min_words: int = 300, preferred_year: int = 2022):
     """
-    Simple rule-based screening (NO scoring):
-    - remove disambiguation/list/outline/index pages
-    - dedupe by title
-    - require minimum content length
-    - require recent year mentioned in content (>= min_year)
-    Returns:
-      selected: list of dicts for top 5
-      log: list of (title, reason) for transparency
+    Must return 5 docs (if possible from candidates).
+    Hard filters (must pass):
+      - not disambiguation/list/outline/index
+      - not duplicate title
+      - min word count
+    Soft preference (not required):
+      - max_year >= preferred_year
     """
-    selected = []
-    log = []
+    hard_pass = []
     seen = set()
 
+    # 1) hard filter
     for d in docs:
         meta = d.metadata or {}
         title = (meta.get("title") or "Untitled").strip()
-        url = meta.get("source", "URL not available")
         content = (d.page_content or "").strip()
 
         key = title.lower()
         if key in seen:
-            log.append((title, "Skipped: duplicate title"))
             continue
         seen.add(key)
 
         if is_low_value_title(title):
-            log.append((title, "Rejected: disambiguation/list/outline/index page"))
             continue
 
         wc = word_count(content)
         if wc < min_words:
-            log.append((title, f"Rejected: too short (<{min_words} words)"))
             continue
 
         max_year = extract_max_year(content)
-        if max_year and max_year < min_year:
-            log.append((title, f"Rejected: no recent years (max_year={max_year} < {min_year})"))
-            continue
-        if max_year == 0:
-            # If no year found, we keep it as a fallback candidate
-            log.append((title, "Accepted (fallback): no year detected, but content length ok"))
-        else:
-            log.append((title, f"Accepted: recent years detected (max_year={max_year})"))
+        url = meta.get("source", "URL not available")
 
-        selected.append(
+        hard_pass.append(
             {
                 "doc": d,
                 "title": title,
                 "url": url,
                 "words": wc,
                 "max_year": max_year,
-                "note": "Selected",
             }
         )
 
-        if len(selected) == 5:
-            break
+    # if too few after hard filter, just return what we have
+    if len(hard_pass) <= 5:
+        selected = hard_pass
+    else:
+        # 2) soft preference: recent first, then others
+        preferred = [x for x in hard_pass if x["max_year"] >= preferred_year]
+        fallback = [x for x in hard_pass if x["max_year"] < preferred_year]
 
-    return selected, log
+        selected = preferred[:5]
+        if len(selected) < 5:
+            selected += fallback[: (5 - len(selected))]
+
+    # add note for display
+    for x in selected:
+        x["note"] = "Preferred (recent)" if x["max_year"] >= preferred_year else "Fallback"
+    return selected[:5]
 
 
 def build_context(selected, max_chars: int = 12000) -> str:
     parts = []
     for i, item in enumerate(selected, start=1):
-        d = item["doc"]
-        text = (d.page_content or "").strip()
+        text = (item["doc"].page_content or "").strip()
         title = item["title"]
         parts.append(f"[Source {i}: {title}]\n{text}\n")
     return "\n".join(parts)[:max_chars]
 
 
-# =========================
-# LLM
-# =========================
 def generate_report_kimi(industry: str, context: str) -> str:
     if not os.getenv("HF_TOKEN"):
         raise RuntimeError("Missing HF_TOKEN environment variable.")
@@ -112,9 +104,9 @@ def generate_report_kimi(industry: str, context: str) -> str:
 You are a market research assistant for a consultant-style business analyst.
 
 RULES:
-- Use ONLY the information from the Wikipedia sources.
+- Use ONLY the information in the Wikipedia sources.
 - Cite facts using [Source 1], [Source 2], etc.
-- If a section is not supported, write: "Not supported by the provided sources."
+- If a section is not supported, say: "Not supported by the provided sources."
 - Keep the report UNDER 500 words.
 
 Industry: {industry}
@@ -143,11 +135,11 @@ Sources:
 
 
 # =========================
-# Streamlit UI (Run button)
+# Streamlit UI
 # =========================
 st.set_page_config(page_title="Market Research Assistant", layout="centered")
 st.title("Market Research Assistant")
-st.write("Retrieve Wikipedia pages, apply simple screening rules, then generate a <500-word report based ONLY on selected sources.")
+st.write("Retrieve Wikipedia pages, apply simple screening (must output 5), then generate a <500-word report based ONLY on selected sources.")
 
 with st.form("industry_form"):
     industry = st.text_input(
@@ -165,7 +157,7 @@ if not industry:
     st.warning("Please enter an industry.")
     st.stop()
 
-# Step 1: Retrieve more than 5, then screen down to 5
+# Step 1: retrieve candidates
 with st.spinner("Searching Wikipedia..."):
     retriever = WikipediaRetriever(top_k_results=12, lang="en")
     raw_docs = retriever.invoke(industry)
@@ -174,26 +166,27 @@ if not raw_docs:
     st.warning("No relevant Wikipedia pages found. Try a different industry keyword.")
     st.stop()
 
-selected, log = screen_docs(raw_docs, min_words=300, min_year=2022)
+# Step 2: select 5 with hard filters + soft preference
+selected = select_5_docs(raw_docs, min_words=300, preferred_year=2022)
 
 if not selected:
-    st.warning("Pages found but none passed screening. Try a broader industry keyword (e.g., add 'industry').")
+    st.warning("No pages passed the basic filters. Try a different keyword (e.g., add 'industry').")
     st.stop()
 
-# Step 2: Show selected sources + simple transparency log
-st.subheader("Step 2 — Selected Wikipedia sources (Title | MaxYear | Words | URL)")
+# If fewer than 5 exist after hard filtering, warn but still show
+if len(selected) < 5:
+    st.warning(f"Only {len(selected)} pages passed basic screening. Showing all available pages.")
+
+st.subheader("Step 2 — Selected Wikipedia pages (Title | Words | MaxYear | Note | URL)")
 for i, item in enumerate(selected, start=1):
     year_display = item["max_year"] if item["max_year"] else "N/A"
-    st.write(f"{i}. **{item['title']}** | MaxYear: **{year_display}** | Words: **{item['words']}**")
+    st.write(
+        f"{i}. **{item['title']}** | Words: **{item['words']}** | "
+        f"MaxYear: **{year_display}** | **{item['note']}**"
+    )
     st.write(item["url"])
 
-with st.expander("Screening log (why pages were accepted/rejected)"):
-    for title, reason in log[:30]:
-        st.write(f"- **{title}** — {reason}")
-    if len(log) > 30:
-        st.write(f"... ({len(log)-30} more)")
-
-# Step 3: Generate report
+# Step 3: generate report
 if not os.getenv("HF_TOKEN"):
     st.info("Report generation is disabled because HF_TOKEN is not set. Set HF_TOKEN to enable it.")
     st.stop()
