@@ -174,7 +174,7 @@ preferred_year = st.sidebar.selectbox("Prefer pages mentioning year >=", [2018, 
 
 # ---- Run button ----
 with st.form("industry_form"):
-    industry = st.text_input("Enter an industry", placeholder="e.g. fast fashion, airline industry, semiconductor industry")
+    industry = st.text_input("Enter an industry", placeholder="e.g. fashion, fast food, AI")
     run = st.form_submit_button("Run analysis")
 
 if not run:
