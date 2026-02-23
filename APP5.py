@@ -3,9 +3,8 @@ import streamlit as st
 from langchain_community.retrievers import WikipediaRetriever
 from openai import OpenAI
 
-# =========================
+
 # Helpers
-# =========================
 def word_count(text: str) -> int:
     return len(re.findall(r"\b\w+\b", text or ""))
 
@@ -32,7 +31,7 @@ def select_top5_docs(docs, min_words: int = 300, preferred_year: int = 2022):
     candidates = []
     seen = set()
 
-    # 1) Hard screening
+    # Hard screening
     for d in docs:
         meta = d.metadata or {}
         title = (meta.get("title") or "").strip()
@@ -107,9 +106,7 @@ def build_context(selected, max_chars: int = 12000) -> str:
         parts.append(f"[Source {i}: {item['title']}]\n{text}\n")
     return "\n".join(parts)[:max_chars]
 
-# =========================
 # LLM
-# =========================
 def generate_report(industry: str, context: str, api_key: str, model: str) -> str:
     client = OpenAI(base_url="https://router.huggingface.co/v1", api_key=api_key)
 
@@ -169,9 +166,8 @@ REPORT:
     )
     return res.choices[0].message.content.strip()
 
-# =========================
+
 # Streamlit UI
-# =========================
 st.set_page_config(page_title="Market Research Assistant", layout="centered")
 st.title("Market Research Assistant")
 st.write("Enter an industry → retrieve 5 Wikipedia pages → generate a <500-word report based only on those pages.")
